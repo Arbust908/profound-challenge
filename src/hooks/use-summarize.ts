@@ -1,8 +1,18 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { createSession } from '~/server/sessions'
+import type { Session } from '~/types/session'
 import { sessionKeys } from './use-sessions'
+
+function isValidUrl(url: string): boolean {
+  try {
+    new URL(url)
+    return true
+  } catch {
+    return false
+  }
+}
 
 export type SummarizeState =
   | { status: 'idle' }
@@ -18,11 +28,22 @@ export function useSummarize() {
   // Ref so abort() can be called from reset() or on unmount without stale closures
   const abortRef = useRef<AbortController | null>(null)
 
+  // Abort any in-flight request when the component unmounts
+  useEffect(() => {
+    return () => { abortRef.current?.abort() }
+  }, [])
+
   const summarize = useCallback(async (url: string) => {
     // Abort any in-flight stream before starting a new one
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
+
+    // Client-side guard — server also validates but this gives a user-friendly message
+    if (!isValidUrl(url)) {
+      setState({ status: 'error', message: 'Invalid URL' })
+      return
+    }
 
     setState({ status: 'creating' })
 
@@ -46,7 +67,8 @@ export function useSummarize() {
       }
 
       // 3. Read the stream
-      const reader = res.body!.getReader()
+      if (!res.body) throw new Error('Response body is null')
+      const reader = res.body.getReader()
       const decoder = new TextDecoder()
       let accumulated = ''
 
@@ -59,11 +81,17 @@ export function useSummarize() {
 
       // 4. Seed the TanStack Query cache with completed content BEFORE navigating
       //    so the session detail route renders instantly with no flicker
-      queryClient.setQueryData(sessionKeys.detail(session.id), {
-        ...session,
+      const cached: Session = {
+        id: session.id,
+        url: session.url,
+        title: session.title,
+        error: session.error,
+        created_at: session.created_at,
+        updated_at: session.updated_at,
         summary: accumulated,
-        status: 'done' as const,
-      })
+        status: 'done',
+      }
+      queryClient.setQueryData(sessionKeys.detail(session.id), cached)
 
       setState({ status: 'done', sessionId: session.id })
 

@@ -4,6 +4,10 @@ import { listSessions, deleteSession, searchSessions, getSession } from '~/serve
 
 export const sessionKeys = {
   all: ['sessions'] as const,
+  // Pageless keys for infinite queries — page is tracked via pageParam, not the key
+  lists: () => [...sessionKeys.all, 'list'] as const,
+  searches: (query: string) => [...sessionKeys.all, 'search', query] as const,
+  // Keyed variants for single-page queries
   list: (page: number) => [...sessionKeys.all, 'list', page] as const,
   search: (query: string, page: number) => [...sessionKeys.all, 'search', query, page] as const,
   detail: (id: string) => [...sessionKeys.all, 'detail', id] as const,
@@ -12,7 +16,7 @@ export const sessionKeys = {
 // Infinite scroll — loads PAGE_SIZE items, fetches next page on demand
 export function useSessions(query: string) {
   return useInfiniteQuery({
-    queryKey: query ? sessionKeys.search(query, 1) : sessionKeys.list(1),
+    queryKey: query ? sessionKeys.searches(query) : sessionKeys.lists(),
     queryFn: ({ pageParam = 1 }) =>
       query
         ? searchSessions({ data: { query, page: pageParam } })
