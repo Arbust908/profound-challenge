@@ -21,7 +21,6 @@ When prompted:
 
 ```bash
 cd url-summarizer
-npm install
 npm run dev  # verify it boots before adding anything
 ```
 
@@ -35,7 +34,7 @@ npm install @tanstack/react-query @tanstack/react-query-devtools
 npm install @supabase/supabase-js
 
 # AI / streaming
-npm install ai @ai-sdk/openai          # Vercel AI SDK + OpenRouter uses OpenAI-compatible provider
+npm install ai @openrouter/ai-sdk-provider   # Vercel AI SDK + official OpenRouter provider
 npm install @ai-sdk/tavily             # Tavily web search tool — first-class AI SDK integration
 npm install streamdown                  # Streaming markdown renderer
 
@@ -195,7 +194,7 @@ import { PAGE_SIZE } from '~/types/session'
 const PageInput = z.object({ page: z.number().int().min(1).default(1) })
 
 export const listSessions = createServerFn({ method: 'GET' })
-  .validator((input: unknown) => PageInput.parse(input))
+  .inputValidator((input: unknown) => PageInput.parse(input))
   .handler(async ({ data }): Promise<PaginatedSessions> => {
     const { page } = data
     const from = (page - 1) * PAGE_SIZE
@@ -223,7 +222,7 @@ export const listSessions = createServerFn({ method: 'GET' })
 
 ```ts
 export const getSession = createServerFn({ method: 'GET' })
-  .validator((id: string) => id)
+  .inputValidator((id: string) => id)
   .handler(async ({ data: id }): Promise<Session> => {
     const { data, error } = await supabaseServer
       .from('sessions')
@@ -240,7 +239,7 @@ export const getSession = createServerFn({ method: 'GET' })
 
 ```ts
 export const deleteSession = createServerFn({ method: 'POST' })
-  .validator((id: string) => id)
+  .inputValidator((id: string) => id)
   .handler(async ({ data: id }) => {
     const { error } = await supabaseServer
       .from('sessions')
@@ -261,7 +260,7 @@ const SearchInput = z.object({
 })
 
 export const searchSessions = createServerFn({ method: 'GET' })
-  .validator((input: unknown) => SearchInput.parse(input))
+  .inputValidator((input: unknown) => SearchInput.parse(input))
   .handler(async ({ data }): Promise<PaginatedSessions> => {
     const { query, page } = data
     const from = (page - 1) * PAGE_SIZE
@@ -300,7 +299,7 @@ import { z } from 'zod'
 const CreateInput = z.object({ url: z.string().url() })
 
 export const createSession = createServerFn({ method: 'POST' })
-  .validator((input: unknown) => CreateInput.parse(input))
+  .inputValidator((input: unknown) => CreateInput.parse(input))
   .handler(async ({ data }): Promise<Session> => {
     const { data: session, error } = await supabaseServer
       .from('sessions')
@@ -335,12 +334,11 @@ The flow:
 ```ts
 import { createAPIFileRoute } from '@tanstack/react-start/api'
 import { streamText } from 'ai'
-import { createOpenAI } from '@ai-sdk/openai'
+import { createOpenRouter } from '@openrouter/ai-sdk-provider'
 import { tavily } from '@ai-sdk/tavily'
 import { supabaseServer } from '~/lib/supabase-server'
 
-const openrouter = createOpenAI({
-  baseURL: 'https://openrouter.ai/api/v1',
+const openrouter = createOpenRouter({
   apiKey: process.env.OPENROUTER_API_KEY!,
 })
 
@@ -376,7 +374,7 @@ export const APIRoute = createAPIFileRoute('/api/summarize')({
     let pageTitle = ''
 
     const result = streamText({
-      model: openrouter('anthropic/claude-3.5-haiku'),
+      model: openrouter.chat('anthropic/claude-3.5-haiku'),
       system: `You are a concise summarization assistant.
 When given a URL, use the webSearch tool to retrieve its content.
 Then write a clear, well-structured markdown summary covering the main ideas,
@@ -409,15 +407,18 @@ key facts, and conclusions. Use headers and bullet points where appropriate.`,
 
 ## Phase 5 — TanStack Query Setup & Hooks
 
-### 5.1 Query client provider
+### 5.1 Query client via router context
 
-`src/main.tsx` (or wherever your app root is):
+In TanStack Start there's no manual `RouterProvider` or `src/main.tsx` to edit — the framework bootstraps itself. The correct pattern is to create the `QueryClient` in `src/router.tsx` and pass it as router context, then wrap the outlet with `QueryClientProvider` in the root route.
 
-```tsx
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { ReactQueryDevtools } from '@tanstack/react-query-devtools'
+`src/router.tsx`
 
-const queryClient = new QueryClient({
+```ts
+import { createRouter } from '@tanstack/react-router'
+import { QueryClient } from '@tanstack/react-query'
+import { routeTree } from './routeTree.gen'
+
+export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 30_000,
@@ -426,15 +427,49 @@ const queryClient = new QueryClient({
   },
 })
 
-export function App() {
+export const router = createRouter({
+  routeTree,
+  context: { queryClient },
+  defaultPreload: 'intent',
+})
+
+declare module '@tanstack/react-router' {
+  interface Register {
+    router: typeof router
+  }
+}
+```
+
+`src/routes/__root.tsx`
+
+```tsx
+import { createRootRouteWithContext, Outlet } from '@tanstack/react-router'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { ReactQueryDevtools } from '@tanstack/react-query-devtools'
+
+interface RouterContext {
+  queryClient: QueryClient
+}
+
+export const Route = createRootRouteWithContext<RouterContext>()({
+  component: RootLayout,
+})
+
+function RootLayout() {
+  const { queryClient } = Route.useRouteContext()
+
   return (
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      {/* app layout goes here — see Phase 7 */}
+      <Outlet />
       <ReactQueryDevtools initialIsOpen={false} />
     </QueryClientProvider>
   )
 }
 ```
+
+Passing `queryClient` through context also makes it available in route loaders for prefetching (used in Phase 7.3).
+
 
 ### 5.2 Session query hooks
 
